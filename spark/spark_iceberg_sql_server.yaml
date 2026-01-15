@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-thrift-iceberg
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-thrift-iceberg
+  template:
+    metadata:
+      labels:
+        app: spark-thrift-iceberg
+    spec:
+      serviceAccountName: spark
+      containers:
+        - name: thriftserver
+          image: repo/spark/spark:base-v7
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: thrift
+              containerPort: 10000
+          env:
+            - name: ICEBERG_REST_CATALOG_URL
+              value: "http://iceberg-rest:8181"
+            - name: ICEBERG_WAREHOUSE
+              value: "s3a://xxx/spark/iceberg"
+            - name: S3_ENDPOINT
+              value: "http://example.s3.com"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          envFrom:
+            - secretRef:
+                name: aws-credentials
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -e
+              mkdir -p /tmp/.ivy2
+              exec /opt/spark/bin/spark-submit \
+                --master k8s://https://kubernetes.default.svc \
+                --deploy-mode client \
+                --name spark-thrift-iceberg \
+                --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 \
+                local:///opt/spark/jars/spark-sql_2.12-3.5.5.jar \
+                --conf spark.kubernetes.namespace=default \
+                --conf spark.kubernetes.authenticate.driver.serviceAccountName=spark \
+                --conf spark.kubernetes.container.image=repo/spark/spark:base-v7 \
+                --conf spark.executor.instances=2 \
+                --conf spark.jars.ivy=/tmp/.ivy2 \
+                --conf spark.jars.packages=org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-aws-bundle:1.8.1 \
+                --conf spark.driver.host=${POD_IP} \
+                --conf spark.driver.bindAddress=0.0.0.0 \
+                --conf spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID=aws-credentials:AWS_ACCESS_KEY_ID \
+                --conf spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY=aws-credentials:AWS_SECRET_ACCESS_KEY \
+                --conf spark.kubernetes.executor.secretKeyRef.AWS_REGION=aws-credentials:AWS_REGION \
+                --conf spark.sql.catalog.iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+                --conf spark.sql.catalog.iceberg.s3.endpoint=${S3_ENDPOINT} \
+                --conf spark.sql.catalog.iceberg.s3.region=us-east-1 \
+                --conf spark.sql.catalog.iceberg.s3.path-style-access=true \
+                --conf spark.sql.catalog.iceberg.s3.ssl-enabled=false \
+                --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+                --conf spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog \
+                --conf spark.sql.catalog.iceberg.type=rest \
+                --conf spark.sql.catalog.iceberg.uri=${ICEBERG_REST_CATALOG_URL} \
+                --conf spark.sql.catalog.iceberg.warehouse=${ICEBERG_WAREHOUSE} \
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-thrift-iceberg
+  namespace: default
+spec:
+  selector:
+    app: spark-thrift-iceberg
+  ports:
+    - name: thrift
+      port: 10000
+      targetPort: 10000
